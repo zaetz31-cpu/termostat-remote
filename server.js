@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
-const DEVICE_ID = "78ee4cc4db1c";
+const DEVICE_ID = "132964885519132";
 
 let authCode = process.env.SHELLY_AUTH_CODE || "";
 let accessToken = null;
