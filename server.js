@@ -5,7 +5,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 const AUTH_KEY = process.env.SHELLY_CLOUD_KEY;
-const DEVICE_ID = "132964885519132";
+const DEVICE_ID = "78ee4cc4db1c";
 
 app.get("/", (req, res) => {
     res.json({
