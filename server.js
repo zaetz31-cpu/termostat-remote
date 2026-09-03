@@ -6,7 +6,6 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
-
 const DEVICE_MAC = "78EECC4DB1C";
 
 let authCode = process.env.SHELLY_AUTH_CODE || "";
@@ -17,42 +16,82 @@ let connected = false;
 let cloudDeviceId = null;
 let lastStatus = null;
 let trid = 0;
+let reconnectTimer = null;
+let connecting = false;
 
 // --------------------------------------------------
 // HOME
 // --------------------------------------------------
 
 app.get("/", (req, res) => {
+
+  const relay = lastStatus?.["switch:0"]?.output;
+  const temp = lastStatus?.["temperature:100"]?.tC;
+
   res.send(`
     <html>
-    <body style="font-family:Arial;text-align:center;padding:30px">
+    <head>
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <title>Termostat Remote</title>
+    </head>
+
+    <body style="
+      font-family:Arial;
+      text-align:center;
+      padding:30px;
+      background:#111;
+      color:white">
+
       <h1>TERMOSTAT REMOTE</h1>
-      <p>Status: <b>${connected ? "CONNECTED" : "DISCONNECTED"}</b></p>
+
+      <h2>
+        Status:
+        ${connected ? "🟢 CONNECTED" : "🔴 DISCONNECTED"}
+      </h2>
+
       <p>Cloud ID: ${cloudDeviceId || "necunoscut"}</p>
-      <p>Releu: ${
-        lastStatus?.["switch:0"]?.output === true
-          ? "ON"
-          : lastStatus?.["switch:0"]?.output === false
-          ? "OFF"
-          : "?"
-      }</p>
-      <p>Temperatura: ${
-        lastStatus?.["temperature:100"]?.tC ?? "?"
-      } °C</p>
 
       <p>
-        <a href="/oauth">Conectare Shelly</a>
+        Releu:
+        <b>${relay === true ? "ON" : relay === false ? "OFF" : "?"}</b>
       </p>
 
       <p>
-        <button onclick="fetch('/api/on',{method:'POST'}).then(r=>r.json()).then(alert)">
-          ON
-        </button>
-
-        <button onclick="fetch('/api/off',{method:'POST'}).then(r=>r.json()).then(alert)">
-          OFF
-        </button>
+        Temperatura:
+        <b>${temp ?? "?"} °C</b>
       </p>
+
+      <br>
+
+      <button
+        style="font-size:22px;padding:15px 35px"
+        onclick="cmd('/api/on')">
+        ON
+      </button>
+
+      <button
+        style="font-size:22px;padding:15px 35px;margin-left:10px"
+        onclick="cmd('/api/off')">
+        OFF
+      </button>
+
+      <br><br>
+
+      <a href="/oauth" style="color:white">
+        Conectare Shelly
+      </a>
+
+      <script>
+        function cmd(url) {
+          fetch(url, {method:"POST"})
+            .then(r => r.json())
+            .then(x => {
+              console.log(x);
+              location.reload();
+            });
+        }
+      </script>
+
     </body>
     </html>
   `);
@@ -94,10 +133,12 @@ app.get("/oauth/callback", async (req, res) => {
 
     const decoded = jwt.decode(authCode);
 
-    if (!decoded || !decoded.user_api_url || !decoded.sub) {
-      return res.status(400).send(
-        "Cod OAuth invalid."
-      );
+    if (
+      !decoded ||
+      !decoded.user_api_url ||
+      !decoded.sub
+    ) {
+      return res.status(400).send("Cod OAuth invalid.");
     }
 
     userApiUrl =
@@ -151,27 +192,33 @@ app.get("/oauth/callback", async (req, res) => {
 });
 
 // --------------------------------------------------
-// SHELLY WEBSOCKET
+// CONNECT SHELLY
 // --------------------------------------------------
 
 function connectShelly() {
 
   if (!accessToken || !userApiUrl) {
-
-    console.log(
-      "Nu exista token Shelly."
-    );
-
+    console.log("Nu exista autentificare Shelly.");
     return;
   }
 
-  if (ws) {
-
-    try {
-      ws.close();
-    } catch (_) {}
-
+  // Nu permitem doua conexiuni simultan
+  if (
+    ws &&
+    (
+      ws.readyState === WebSocket.OPEN ||
+      ws.readyState === WebSocket.CONNECTING
+    )
+  ) {
+    console.log("WebSocket deja conectat/conectare.");
+    return;
   }
+
+  if (connecting) {
+    return;
+  }
+
+  connecting = true;
 
   const host =
     new URL(userApiUrl).host;
@@ -179,28 +226,22 @@ function connectShelly() {
   const url =
     `wss://${host}:6113/shelly/wss/hk_sock?t=${accessToken}`;
 
-  console.log(
-    "Conectare Shelly WebSocket..."
-  );
+  console.log("Conectare Shelly WebSocket...");
+  console.log("HOST:", host);
 
-  console.log(
-    "HOST:",
-    host
-  );
+  const socket = new WebSocket(url);
 
-  ws = new WebSocket(url);
+  ws = socket;
 
-  ws.on("open", () => {
+  socket.on("open", () => {
 
+    connecting = false;
     connected = true;
 
-    console.log(
-      "SHELLY CLOUD -> CONNECTED"
-    );
-
+    console.log("SHELLY CLOUD -> CONNECTED");
   });
 
-  ws.on("message", data => {
+  socket.on("message", data => {
 
     try {
 
@@ -212,13 +253,9 @@ function connectShelly() {
         JSON.stringify(msg)
       );
 
-      // ------------------------------
-      // STATUS
-      // ------------------------------
-
+      // STATUS DEVICE
       if (
-        msg.event ===
-        "Shelly:StatusOnChange"
+        msg.event === "Shelly:StatusOnChange"
       ) {
 
         const mac =
@@ -229,10 +266,8 @@ function connectShelly() {
         if (mac === DEVICE_MAC) {
 
           if (msg.device?.id) {
-
             cloudDeviceId =
               String(msg.device.id);
-
           }
 
           lastStatus =
@@ -255,13 +290,9 @@ function connectShelly() {
         }
       }
 
-      // ------------------------------
       // COMMAND RESPONSE
-      // ------------------------------
-
       if (
-        msg.event ===
-        "Shelly:CommandResponse"
+        msg.event === "Shelly:CommandResponse"
       ) {
 
         console.log(
@@ -270,9 +301,7 @@ function connectShelly() {
         );
       }
 
-      if (
-        msg.event === "Error"
-      ) {
+      if (msg.event === "Error") {
 
         console.log(
           "SHELLY ERROR:",
@@ -283,38 +312,56 @@ function connectShelly() {
     } catch (err) {
 
       console.log(
-        "Mesaj Shelly invalid:",
+        "Mesaj invalid:",
         err.message
       );
     }
-
   });
 
-  ws.on("close", () => {
+  socket.on("close", () => {
 
+    if (ws === socket) {
+      ws = null;
+    }
+
+    connecting = false;
     connected = false;
 
     console.log(
       "SHELLY CLOUD -> DISCONNECTED"
     );
 
-    setTimeout(
-      connectShelly,
-      5000
-    );
-
+    scheduleReconnect();
   });
 
-  ws.on("error", err => {
+  socket.on("error", err => {
 
-    connected = false;
+    connecting = false;
 
     console.log(
       "SHELLY WS ERROR:",
       err.message
     );
-
   });
+}
+
+// --------------------------------------------------
+// RECONNECT
+// --------------------------------------------------
+
+function scheduleReconnect() {
+
+  if (reconnectTimer) {
+    return;
+  }
+
+  reconnectTimer = setTimeout(() => {
+
+    reconnectTimer = null;
+
+    connectShelly();
+
+  }, 5000);
 }
 
 // --------------------------------------------------
@@ -329,7 +376,7 @@ function sendRelay(turn) {
   ) {
 
     console.log(
-      "Shelly WebSocket nu este conectat."
+      "WebSocket nu este conectat."
     );
 
     return false;
@@ -394,7 +441,6 @@ app.post("/api/on", (req, res) => {
     ok,
     command: "on"
   });
-
 });
 
 // --------------------------------------------------
@@ -410,7 +456,6 @@ app.post("/api/off", (req, res) => {
     ok,
     command: "off"
   });
-
 });
 
 // --------------------------------------------------
@@ -426,7 +471,6 @@ app.post("/api/toggle", (req, res) => {
     ok,
     command: "toggle"
   });
-
 });
 
 // --------------------------------------------------
@@ -450,13 +494,8 @@ app.get("/api/status", (req, res) => {
 
     temperature:
       lastStatus?.["temperature:100"]?.tC
-        ?? null,
-
-    status:
-      lastStatus
-
+        ?? null
   });
-
 });
 
 // --------------------------------------------------
@@ -475,20 +514,7 @@ app.listen(PORT, () => {
   );
 
   if (authCode) {
-
-    const decoded =
-      jwt.decode(authCode);
-
-    if (
-      decoded &&
-      decoded.user_api_url
-    ) {
-
-      userApiUrl =
-        decoded.user_api_url;
-
-      exchangeExistingCode();
-    }
+    exchangeExistingCode();
   }
 });
 
@@ -505,7 +531,8 @@ async function exchangeExistingCode() {
 
     if (
       !decoded ||
-      !decoded.sub
+      !decoded.sub ||
+      !decoded.user_api_url
     ) {
 
       console.log(
@@ -520,9 +547,7 @@ async function exchangeExistingCode() {
         .replace(/\/$/, "");
 
     const clientId =
-      encodeURIComponent(
-        decoded.sub
-      );
+      encodeURIComponent(decoded.sub);
 
     const url =
       `${userApiUrl}/oauth/auth` +
