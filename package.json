@@ -5,9 +5,9 @@
   "scripts": {
     "start": "node server.js"
   },
-  "dependencies": {
-    "express": "^4.21.2",
-    "ws": "^8.18.0",
-    "jsonwebtoken": "^9.0.2"
-  }
+ "dependencies": {
+  "express": "^4.21.2",
+  "ws": "^8.18.0",
+  "shelly-outbound-websockets": "github:ALLTERCO/shelly-outbound-websockets"
+}
 }
