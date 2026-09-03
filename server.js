@@ -1,89 +1,141 @@
 const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
 
 const app = express();
-const server = http.createServer(app);
-
-const wss = new WebSocket.Server({ noServer: true });
+app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-let shelly = null;
-let lastMessage = null;
-let lastSeen = null;
+const AUTH_KEY = process.env.SHELLY_CLOUD_KEY;
+const DEVICE_ID = "132964885519132";
 
-server.on("upgrade", (req, socket, head) => {
-    console.log("WS UPGRADE:", req.url);
+const SHELLY_HOST = "shelly-23-eu.shelly.cloud";
 
-    if (req.url !== "/shelly") {
-        socket.destroy();
-        return;
+async function shellyRequest(path, options = {}) {
+    const url =
+        `https://${SHELLY_HOST}${path}` +
+        (path.includes("?") ? "&" : "?") +
+        `auth_key=${encodeURIComponent(AUTH_KEY)}`;
+
+    const response = await fetch(url, options);
+
+    const text = await response.text();
+
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch (e) {
+        data = text;
     }
 
-    wss.handleUpgrade(req, socket, head, ws => {
-        console.log("SHELLY CONNECTED");
+    return {
+        status: response.status,
+        data: data
+    };
+}
 
-        shelly = ws;
-        lastSeen = new Date().toISOString();
 
-        wss.emit("connection", ws, req);
-    });
-});
-
-wss.on("connection", ws => {
-
-    ws.on("message", data => {
-
-        lastMessage = data.toString();
-        lastSeen = new Date().toISOString();
-
-        console.log("SHELLY ->", lastMessage);
-    });
-
-    ws.on("close", () => {
-
-        console.log("SHELLY DISCONNECTED");
-
-        if (shelly === ws) {
-            shelly = null;
-        }
-    });
-
-    ws.on("error", err => {
-        console.log("WS ERROR:", err.message);
-    });
-});
-
+// HOME
 app.get("/", (req, res) => {
     res.json({
         ok: true,
-        shelly_connected: shelly !== null,
-        last_seen: lastSeen
+        server: "TERMOSTAT REMOTE",
+        device_id: DEVICE_ID
     });
 });
 
-app.get("/shelly", (req, res) => {
-    res.send("SHELLY WS ENDPOINT OK");
+
+// STATUS
+app.get("/api/status", async (req, res) => {
+
+    try {
+
+        const result = await shellyRequest(
+            "/v2/devices/api/get",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    ids: [DEVICE_ID],
+                    select: ["status"]
+                })
+            }
+        );
+
+        res.status(result.status).json(result.data);
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
+        });
+    }
 });
 
-app.get("/status", (req, res) => {
-    res.json({
-        ok: true,
-        shelly_connected: shelly !== null,
-        last_seen: lastSeen,
-        last_message: lastMessage
-    });
+
+// ON / OFF
+app.post("/api/relay", async (req, res) => {
+
+    try {
+
+        const on = req.body.on === true;
+
+        const result = await shellyRequest(
+            "/v2/devices/api/set/switch",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    id: DEVICE_ID,
+                    channel: 0,
+                    on: on
+                })
+            }
+        );
+
+        res.status(result.status).json(result.data);
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
+        });
+    }
 });
 
-app.get("/test", (req, res) => {
-    res.json({
-        server: "OK",
-        websocket: "READY",
-        shelly_connected: shelly !== null
-    });
+
+app.get("/test", async (req, res) => {
+
+    try {
+
+        const result = await shellyRequest(
+            "/v2/devices/api/get",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    ids: [DEVICE_ID],
+                    select: ["status"]
+                })
+            }
+        );
+
+        res.status(result.status).json(result.data);
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
+        });
+    }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-    console.log("SERVER READY:", PORT);
+
+app.listen(PORT, "0.0.0.0", () => {
+    console.log("TERMOSTAT REMOTE READY:", PORT);
 });
